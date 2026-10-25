@@ -1,0 +1,105 @@
+# ==============================================================================
+# Zero-Trust Kubernetes NetworkPolicies
+# ==============================================================================
+# Implements micro-segmentation and least-privilege network isolation inside the
+# 'workshop' namespace using native Kubernetes NetworkPolicies.
+#
+# Security Architecture:
+# 1. Default Deny: All unsolicited inbound connections to any pod are dropped by default.
+# 2. Frontend Access: Only traffic originating from the 'ingress-nginx' namespace is allowed
+#    to reach the frontend pods on port 3000.
+# 3. Backend Access: Traffic from the 'ingress-nginx' namespace (on /api) and frontend pods
+#    is allowed to reach backend pods on port 8080.
+# 4. Database Isolation (Critical): MongoDB accepts inbound TCP connections ONLY from
+#    pods labeled 'role: backend' on port 27017. All direct external or lateral pod access is blocked.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Default Deny All Ingress
+# ------------------------------------------------------------------------------
+# Enforces a baseline "deny all inbound" posture across the entire 'workshop' namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: workshop
+spec:
+  podSelector: {} # Applies to all pods in the namespace
+  policyTypes:
+    - Ingress
+---
+# ------------------------------------------------------------------------------
+# 2. Allow Traffic to Frontend from Ingress Controller
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: workshop
+spec:
+  podSelector:
+    matchLabels:
+      role: frontend
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow traffic originating from the NGINX Ingress Controller namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# ------------------------------------------------------------------------------
+# 3. Allow Traffic to Backend from Ingress Controller & Frontend
+# ------------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-backend
+  namespace: workshop
+spec:
+  podSelector:
+    matchLabels:
+      role: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow requests routed from NGINX Ingress controller or internal calls from frontend
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              role: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# ------------------------------------------------------------------------------
+# 4. Strictly Isolate MongoDB Database
+# ------------------------------------------------------------------------------
+# Crucial Security Rule: ONLY Backend pods are permitted to communicate with MongoDB.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-mongodb
+  namespace: workshop
+spec:
+  podSelector:
+    matchLabels:
+      app: mongodb
+  policyTypes:
+    - Ingress
+  ingress:
+    # Restrict MongoDB incoming connections exclusively to pods with role: backend
+    - from:
+        - podSelector:
+            matchLabels:
+              role: backend
+      ports:
+        - protocol: TCP
+          port: 27017

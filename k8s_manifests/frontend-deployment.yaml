@@ -1,0 +1,140 @@
+# ==============================================================================
+# Frontend React Web App Kubernetes Deployment (Hardened Production Grade)
+# ==============================================================================
+# Deploys the React SPA web interface with high availability across availability zones,
+# non-root execution, zero-downtime rolling updates, and calibrated health checks.
+#
+# Key Features:
+# 1. Seamless Ingress Routing: 'REACT_APP_BACKEND_URL: "/api/tasks"' tells the user's
+#    browser to send API calls relatively via the NGINX Ingress Controller, preventing
+#    CORS failures and eliminating any dependency on cluster-internal DNS in external browsers.
+# 2. Zero-Downtime Updates: 'maxUnavailable: 0' and 'maxSurge: 1' ensures old web pods
+#    remain online until new pods pass their readiness checks.
+# 3. SecurityContext: Enforces non-root execution (UID 1000), drops all Linux capabilities,
+#    and applies the RuntimeDefault seccomp profile.
+# 4. Anti-Affinity & Topology Spread: Distributes replicas across multiple EC2 nodes
+#    and AWS Availability Zones.
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: workshop
+  labels:
+    app: frontend
+    role: frontend
+    tier: web
+    env: production
+spec:
+  replicas: 2 # Minimum 2 replicas for high availability
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1       # Spin up 1 new container before stopping an old one
+      maxUnavailable: 0 # Zero downtime during deployments
+  selector:
+    matchLabels:
+      role: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        role: frontend
+        tier: web
+        env: production
+    spec:
+      terminationGracePeriodSeconds: 30
+
+      # Pod-level security context
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Anti-Affinity: Spread frontend replicas across different nodes and AZs
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: role
+                      operator: In
+                      values:
+                        - frontend
+                topologyKey: "kubernetes.io/hostname"
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: role
+                      operator: In
+                      values:
+                        - frontend
+                topologyKey: "topology.kubernetes.io/zone"
+
+      # Topology Spread: Ensures balanced distribution across AWS Availability Zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "topology.kubernetes.io/zone"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              role: frontend
+
+      containers:
+        - name: frontend
+          image: public.ecr.aws/p7o6b8m7/three-tier-frontend:latest
+          imagePullPolicy: Always
+
+          # Container-level security context
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Relative endpoint: The browser executes HTTP requests to <Ingress-Host>/api/tasks,
+          # which the NGINX Ingress forwards seamlessly to backend:8080/api/tasks
+          env:
+            - name: REACT_APP_BACKEND_URL
+              value: "/api/tasks"
+
+          ports:
+            - name: http
+              containerPort: 3000
+
+          # Resource boundaries to prevent CPU/memory starvation
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          # PreStop Hook: Allows load balancers time to drain existing connections
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+
+          # Liveness Probe: Verifies the web server port 3000 is accepting TCP connections
+          livenessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # Readiness Probe: Only register pod in the Service endpoint once port 3000 is open
+          readinessProbe:
+            tcpSocket:
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 2

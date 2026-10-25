@@ -1,0 +1,29 @@
+# ==============================================================================
+# Frontend React Web App Kubernetes Service
+# ==============================================================================
+# Provides a stable internal virtual IP (ClusterIP) and internal DNS entry
+# ('frontend.workshop.svc.cluster.local' on port 3000) for routing HTTP requests
+# to healthy frontend web pods matching the selector 'role: frontend'.
+#
+# Network Path:
+# NGINX Ingress Controller -> frontend:3000 -> Frontend Pods
+# ==============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: workshop
+  labels:
+    app: frontend
+    role: frontend
+    tier: web
+spec:
+  type: ClusterIP # Internal cluster-only IP; traffic enters exclusively through Ingress
+  selector:
+    role: frontend # Dynamically load balances across all frontend pods with this label
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000       # Port exposed by the Service internally
+      targetPort: 3000 # Port where the React web server is listening in the container

@@ -1,0 +1,72 @@
+# ==============================================================================
+# NGINX Ingress Controller Routing & Edge Security Manifest
+# ==============================================================================
+# This Ingress resource manages all external HTTP entry points into the EKS cluster
+# via an AWS Network Load Balancer (NLB) provisioned by the NGINX Ingress Controller.
+#
+# Routing Rules:
+# - Path '/'        -> Routes to React 'frontend' Service (port 3000)
+# - Path '/api'     -> Routes to Node.js 'backend' REST API Service (port 8080)
+# - Path '/ok'      -> Routes to Node.js 'backend' health endpoint (port 8080)
+#
+# Production Security & Performance Annotations:
+# 1. DDoS & Brute Force Protection: 'limit-rps: 100' and 'limit-connections: 50'
+#    rate-limits abusive clients at the Ingress proxy layer before hitting app pods.
+# 2. Security Response Headers:
+#    - X-Frame-Options: SAMEORIGIN (prevents clickjacking attacks)
+#    - X-Content-Type-Options: nosniff (prevents MIME type sniffing)
+#    - X-XSS-Protection: 1; mode=block (activates browser XSS filters)
+#    - Referrer-Policy: strict-origin-when-cross-origin (protects referral privacy)
+# 3. Timeout Tuning: Prevents slowloris attacks and socket exhaustion.
+# ==============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: three-tier-ingress
+  namespace: workshop
+  annotations:
+    # Binds this resource to the NGINX Ingress controller
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "false" # Set to "true" when TLS/ACM certificates are attached
+
+    # Buffer & Timeout Limits
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "15"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+
+    # Rate Limiting & Connection Throttling
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Rule 1: Route /api requests to the Node.js backend service
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+
+          # Rule 2: Route /ok health check requests to backend
+          - path: /ok
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8080
+
+          # Rule 3: Route root / requests to the React frontend web app
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000

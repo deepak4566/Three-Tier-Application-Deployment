@@ -1,0 +1,172 @@
+# ==============================================================================
+# MongoDB StatefulSet Manifest (Hardened Production Grade)
+# ==============================================================================
+# Deploys a persistent, production-grade MongoDB instance using a Kubernetes StatefulSet.
+#
+# Key Production Characteristics:
+# 1. StatefulSet vs Deployment:
+#    - Guarantees ordered deployment, sticky network identities ('mongodb-0'), and
+#      dedicated persistent volume attachments that persist across pod rescheduling.
+# 2. Dynamic Volume Provisioning:
+#    - 'volumeClaimTemplates' dynamically requests a 10Gi AWS EBS gp3 SSD volume from
+#      the 'ebs-gp3-sc' StorageClass (with WaitForFirstConsumer and encryption enabled).
+# 3. SecurityContext & Non-Root Execution:
+#    - Runs as non-root user '999' (the official mongodb UID/GID).
+#    - An unprivileged initContainer prepares /data/db folder ownership for UID 999.
+# 4. Entrypoint Initialization:
+#    - Flags passed via 'args' preserve the official 'docker-entrypoint.sh' flow,
+#      guaranteeing root authentication is properly created via MONGO_INITDB_ROOT_*.
+# 5. Secrets Integration:
+#    - Mounts the AWS Secrets Store CSI driver to synchronize credentials from AWS Secrets Manager.
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb
+  namespace: workshop
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  # Bound to the headless service defined in mongo/service.yaml
+  serviceName: "mongodb-headless"
+  replicas: 1 # Single replica; stateful storage guarantees data integrity
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+        tier: database
+    spec:
+      serviceAccountName: workshop-sa
+
+      # Grace period: Allows WiredTiger storage engine to cleanly flush dirty cache
+      # pages and journal entries to disk before shutdown.
+      terminationGracePeriodSeconds: 60
+
+      # Pod-level security context (CIS Benchmark compliance)
+      securityContext:
+        fsGroup: 999 # Ensures EBS volume files are owned by the mongodb group
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Init Container: Ensures the mounted AWS EBS volume is owned by UID 999 (mongodb)
+      initContainers:
+        - name: init-volume-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "chown -R 999:999 /data/db && chmod 700 /data/db"]
+          securityContext:
+            runAsUser: 0 # Only init container runs temporarily as root to set permissions
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - FOWNER
+          volumeMounts:
+            - name: mongo-data
+              mountPath: /data/db
+
+      containers:
+        - name: mongodb
+          image: mongo:4.4.6
+
+          # Container-level security context: Drops all root privileges
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Arguments passed to the default docker-entrypoint.sh
+          # (Does NOT override ENTRYPOINT, allowing user initialization to run)
+          args:
+            - "mongod"
+            - "--wiredTigerCacheSizeGB=0.2" # Constrains cache to fit within container memory limits
+            - "--bind_ip_all"
+
+          ports:
+            - name: mongodb
+              containerPort: 27017
+
+          # Resource boundaries to guarantee database QoS
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+
+          # Environment variables for root credential bootstrap
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-sec
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-sec
+                  key: password
+            - name: MONGO_INITDB_DATABASE
+              value: "todo"
+
+          # Volume mounts: Persistent storage and AWS Secrets Store
+          volumeMounts:
+            # Mounts the AWS EBS gp3 volume at MongoDB's primary data storage path
+            - name: mongo-data
+              mountPath: /data/db
+            # Mounts the AWS Secrets Store CSI driver
+            - name: secrets-store-inline
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+
+          # Readiness Probe: Verifies MongoDB engine is ready to accept commands
+          readinessProbe:
+            exec:
+              command:
+                - mongo
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+
+          # Liveness Probe: Verifies MongoDB process is listening on TCP port 27017
+          livenessProbe:
+            tcpSocket:
+              port: 27017
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+
+      # Volumes: Secrets Store CSI volume referencing the AWS SecretProviderClass
+      volumes:
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "aws-secrets-provider"
+
+  # VolumeClaimTemplates: Automatically generates a PersistentVolumeClaim (PVC)
+  # bound to the 'ebs-gp3-sc' StorageClass for each StatefulSet replica.
+  volumeClaimTemplates:
+    - metadata:
+        name: mongo-data
+      spec:
+        accessModes:
+          - ReadWriteOnce # Single-node read/write access (standard for block storage)
+        storageClassName: "ebs-gp3-sc" # AWS EBS gp3 provisioner
+        resources:
+          requests:
+            storage: 10Gi

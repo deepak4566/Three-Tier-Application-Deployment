@@ -1,0 +1,59 @@
+# ==============================================================================
+# MongoDB Services Manifest: Headless & ClusterIP Services
+# ==============================================================================
+# StatefulSets in Kubernetes require two distinct network services to function
+# correctly in production:
+#
+# 1. Headless Service ('mongodb-headless'):
+#    - 'clusterIP: None'
+#    - Required by the StatefulSet's 'serviceName' attribute.
+#    - Directly creates stable, predictable DNS A-records for individual Pods:
+#      'mongodb-0.mongodb-headless.workshop.svc.cluster.local'
+#
+# 2. ClusterIP Service ('mongodb-svc'):
+#    - Standard internal virtual IP load-balancer.
+#    - Used by the Node.js Backend connection string: 'mongodb://mongodb-svc:27017/todo'.
+#    - Routes traffic to whatever healthy MongoDB pod is currently running.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Headless Service for StatefulSet Identity
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-headless
+  namespace: workshop
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  clusterIP: None # Headless: No virtual cluster IP allocated
+  selector:
+    app: mongodb
+  ports:
+    - name: mongodb
+      protocol: TCP
+      port: 27017
+      targetPort: 27017
+---
+# ------------------------------------------------------------------------------
+# 2. ClusterIP Service for Backend Access
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-svc
+  namespace: workshop
+  labels:
+    app: mongodb
+    tier: database
+spec:
+  type: ClusterIP
+  selector:
+    app: mongodb
+  ports:
+    - name: mongodb
+      protocol: TCP
+      port: 27017
+      targetPort: 27017

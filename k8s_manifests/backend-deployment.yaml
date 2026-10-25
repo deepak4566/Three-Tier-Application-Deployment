@@ -1,0 +1,184 @@
+# ==============================================================================
+# Backend REST API Kubernetes Deployment (Hardened Production Grade)
+# ==============================================================================
+# Deploys the Node.js Express REST API backend with enterprise-grade resilience,
+# zero-downtime rolling updates, anti-affinity scheduling, and strict securityContext.
+#
+# Key Features:
+# 1. Zero-Downtime Updates: 'maxUnavailable: 0' and 'maxSurge: 1' ensures old pods are
+#    never terminated until new replacement pods pass readiness health checks.
+# 2. High Availability: Pod Anti-Affinity and Topology Spread Constraints ensure replicas
+#    are distributed across distinct physical worker nodes and different AWS Availability Zones.
+# 3. SecurityContext: Non-root execution (UID 1000), privilege escalation blocked,
+#    Linux capabilities dropped (drop: ALL), and RuntimeDefault seccomp profile enforced.
+# 4. AWS Secrets Manager Integration: CSI volume dynamically projects credentials into
+#    /mnt/secrets-store and populates the native 'mongo-sec' Kubernetes Secret.
+# 5. Graceful Termination: 'preStop' hook sleeps 5s allowing in-flight HTTP requests
+#    to complete before SIGTERM stops the Node.js process.
+# ==============================================================================
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: workshop
+  labels:
+    app: backend
+    role: backend
+    tier: api
+    env: production
+spec:
+  replicas: 2 # Minimum 2 replicas for high availability
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1        # Launch 1 new pod before tearing down an old pod
+      maxUnavailable: 0  # Zero downtime: Never allow fewer than 2 pods during deployment
+  selector:
+    matchLabels:
+      role: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        role: backend
+        tier: api
+        env: production
+    spec:
+      # ServiceAccount annotated with IRSA role to authorize Secrets Store CSI calls
+      serviceAccountName: workshop-sa
+
+      # Grace period allowing connections to drain before sending SIGKILL
+      terminationGracePeriodSeconds: 30
+
+      # Pod-level security context (CIS Benchmark compliance)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Anti-Affinity Rules: Spread pods across different physical nodes and AWS AZs
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            # Rule 1: Avoid scheduling two backend pods on the same worker node
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: role
+                      operator: In
+                      values:
+                        - backend
+                topologyKey: "kubernetes.io/hostname"
+            # Rule 2: Prefer scheduling backend pods across different Availability Zones
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: role
+                      operator: In
+                      values:
+                        - backend
+                topologyKey: "topology.kubernetes.io/zone"
+
+      # Topology Spread: Enforces even distribution across AWS Availability Zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: "topology.kubernetes.io/zone"
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              role: backend
+
+      containers:
+        - name: backend
+          image: public.ecr.aws/p7o6b8m7/three-tier-backend:latest
+          imagePullPolicy: Always
+
+          # Container-level security context
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+          # Application environment variables
+          env:
+            # Tells backend/db.js to authenticate with MongoDB using username and password
+            - name: USE_DB_AUTH
+              value: "true"
+            # MongoDB connection string pointing to the ClusterIP service with authSource=admin
+            - name: MONGO_CONN_STR
+              value: "mongodb://mongodb-svc:27017/todo?authSource=admin&directConnection=true"
+            # Root username injected from the synchronized 'mongo-sec' Kubernetes Secret
+            - name: MONGO_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-sec
+                  key: username
+            # Root password injected from the synchronized 'mongo-sec' Kubernetes Secret
+            - name: MONGO_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-sec
+                  key: password
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          # Resource boundaries to prevent CPU/memory starvation
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+
+          # Mount path for the AWS Secrets Store CSI driver
+          volumeMounts:
+            - name: secrets-store-inline
+              mountPath: "/mnt/secrets-store"
+              readOnly: true
+
+          # PreStop Lifecycle Hook: Gives NGINX Ingress time to remove this pod IP
+          # from upstream endpoints before the application stops accepting requests.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
+
+          # Liveness Probe: Restarts the container if the Node.js event loop deadlocks
+          livenessProbe:
+            httpGet:
+              path: /ok
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # Readiness Probe: Only routes traffic to this pod once /ok returns HTTP 200
+          readinessProbe:
+            httpGet:
+              path: /ok
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 2
+
+      # Volumes: Defines the Secrets Store CSI volume referencing the SecretProviderClass
+      volumes:
+        - name: secrets-store-inline
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: "aws-secrets-provider"

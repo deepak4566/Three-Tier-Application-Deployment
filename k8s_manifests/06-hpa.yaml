@@ -1,0 +1,66 @@
+# ==============================================================================
+# Kubernetes HorizontalPodAutoscaler (HPA v2) Manifests
+# ==============================================================================
+# Automatically scales application pod replicas up or down based on real-time
+# CPU and Memory resource consumption reported by the Kubernetes Metrics Server.
+#
+# Production Benefits:
+# 1. Cost Efficiency: Scales down during periods of low traffic to save compute resources.
+# 2. Resilience: Spawns additional replicas automatically when traffic spikes occur,
+#    maintaining low response latencies and preventing out-of-memory (OOM) crashes.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Backend REST API Autoscaler
+# ------------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: workshop
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2  # Baseline high availability (spread across nodes/AZs)
+  maxReplicas: 10 # Maximum burst capacity during peak demand
+  metrics:
+    # Scale up if average CPU utilization exceeds 75% of requested CPU (75m of 100m)
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    # Scale up if average Memory utilization exceeds 80% of requested Memory
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+---
+# ------------------------------------------------------------------------------
+# 2. Frontend React Web App Autoscaler
+# ------------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: workshop
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2 # Baseline high availability
+  maxReplicas: 8 # Maximum burst capacity
+  metrics:
+    # Scale up if average CPU utilization exceeds 75% of requested CPU
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75

@@ -1,0 +1,29 @@
+# ==============================================================================
+# AWS EBS gp3 StorageClass Manifest
+# ==============================================================================
+# This StorageClass provisions high-performance, cost-effective AWS EBS gp3 SSD
+# volumes for stateful applications (such as MongoDB).
+#
+# Production Features:
+# 1. provisioner: 'ebs.csi.aws.com' delegates volume lifecycle to the AWS EBS CSI Driver.
+# 2. volumeBindingMode: 'WaitForFirstConsumer' delays EBS volume creation until a Pod
+#    is scheduled onto a specific node. This guarantees the EBS volume is created in the
+#    exact Availability Zone (AZ) where the Pod runs, preventing cross-AZ attach errors.
+# 3. allowVolumeExpansion: 'true' enables on-the-fly volume resizing without deleting PVCs.
+# 4. encrypted: 'true' ensures all data written to the EBS volume is encrypted at rest.
+# ==============================================================================
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-gp3-sc
+  annotations:
+    # Set this as the default storage class for the cluster
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  type: gp3
+  fsType: ext4
+  encrypted: "true"

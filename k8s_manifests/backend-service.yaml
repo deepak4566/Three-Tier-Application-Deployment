@@ -1,0 +1,29 @@
+# ==============================================================================
+# Backend REST API Kubernetes Service
+# ==============================================================================
+# Provides a stable internal virtual IP (ClusterIP) and internal DNS entry
+# ('backend.workshop.svc.cluster.local' on port 8080) for routing HTTP requests
+# to healthy backend application pods matching the selector 'role: backend'.
+#
+# Network Path:
+# NGINX Ingress Controller -> backend:8080 -> Backend Pods
+# ==============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: workshop
+  labels:
+    app: backend
+    role: backend
+    tier: api
+spec:
+  type: ClusterIP # Internal cluster-only IP; traffic enters exclusively through Ingress
+  selector:
+    role: backend # Dynamically load balances across all backend pods with this label
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8080       # Port exposed by the Service internally
+      targetPort: 8080 # Port where the Node.js Express server is listening in the container

@@ -1,0 +1,48 @@
+# ==============================================================================
+# Namespace Resource Governance: ResourceQuota & LimitRange
+# ==============================================================================
+# In multi-tenant or production clusters, these manifests guarantee predictable
+# resource allocation and prevent noisy neighbors from exhausting node CPU or memory.
+#
+# Resources:
+# 1. ResourceQuota: Caps the total aggregate CPU, Memory, and Pod counts permitted
+#    inside the 'workshop' namespace.
+# 2. LimitRange: Enforces default and ceiling resource requests/limits on any
+#    individual container deployed without explicit resource declarations.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Namespace ResourceQuota
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: workshop-quota
+  namespace: workshop
+spec:
+  hard:
+    requests.cpu: "4"       # Maximum total requested CPU cores in this namespace
+    requests.memory: 8Gi    # Maximum total requested Memory in this namespace
+    limits.cpu: "8"         # Maximum upper CPU burst limit across all pods
+    limits.memory: 16Gi     # Maximum upper Memory limit across all pods
+    pods: "30"              # Maximum number of concurrent pods allowed in workshop
+---
+# ------------------------------------------------------------------------------
+# 2. Container LimitRange
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: workshop-limits
+  namespace: workshop
+spec:
+  limits:
+    - type: Container
+      # Default limits assigned if a manifest omits resources.limits
+      default:
+        cpu: 500m
+        memory: 512Mi
+      # Default requests assigned if a manifest omits resources.requests
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi

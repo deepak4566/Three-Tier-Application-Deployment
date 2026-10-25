@@ -1,0 +1,55 @@
+# ==============================================================================
+# Kubernetes PodDisruptionBudget (PDB) Manifests
+# ==============================================================================
+# PodDisruptionBudgets protect applications from voluntary disruptions (e.g., node
+# draining during Kubernetes version upgrades, cluster autoscaler scale-downs, or
+# AMI rolling updates).
+#
+# Production Benefits:
+# - 'minAvailable: 1' guarantees that at least one replica of Frontend and Backend
+#   is always running and serving traffic, preventing service outages during maintenance.
+# - 'maxUnavailable: 1' prevents Kubernetes from terminating the single MongoDB
+#   instance while other nodes are undergoing updates.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Backend API PodDisruptionBudget
+# ------------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: workshop
+spec:
+  minAvailable: 1 # At least 1 backend pod must remain available at all times
+  selector:
+    matchLabels:
+      role: backend
+---
+# ------------------------------------------------------------------------------
+# Frontend React Web App PodDisruptionBudget
+# ------------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: frontend-pdb
+  namespace: workshop
+spec:
+  minAvailable: 1 # At least 1 frontend pod must remain available at all times
+  selector:
+    matchLabels:
+      role: frontend
+---
+# ------------------------------------------------------------------------------
+# MongoDB Database PodDisruptionBudget
+# ------------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mongodb-pdb
+  namespace: workshop
+spec:
+  maxUnavailable: 1 # At most 1 replica can be unavailable during voluntary disruption
+  selector:
+    matchLabels:
+      app: mongodb

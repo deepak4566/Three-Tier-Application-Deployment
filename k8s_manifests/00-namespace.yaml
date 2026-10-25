@@ -1,0 +1,20 @@
+# ==============================================================================
+# Kubernetes Namespace Manifest
+# ==============================================================================
+# The 'workshop' namespace provides logical isolation for all components of the
+# Three-Tier application (Frontend, Backend, MongoDB, Configs, and Services).
+#
+# Isolation Benefits:
+# - Resource boundary for ResourceQuota and LimitRange limits.
+# - Network security boundary for NetworkPolicies.
+# - Clean lifecycle management (deleting the namespace cleanly deletes all resources).
+# ==============================================================================
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: workshop
+  labels:
+    name: workshop
+    environment: production
+    app.kubernetes.io/part-of: three-tier-app
