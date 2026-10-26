@@ -8,6 +8,9 @@ An enterprise-grade, end-to-end deployment guide for a **Three-Tier Web Applicat
 
 ## 📑 Table of Contents
 1. [Architecture Overview](#-architecture-overview)
+   - [High-Level End-to-End System Architecture](#high-level-end-to-end-system-architecture)
+   - [1. Terraform & AWS Cloud Infrastructure Diagram](#1-terraform--aws-cloud-infrastructure-diagram)
+   - [2. Kubernetes Workloads & Request Traffic Flow Diagram](#2-kubernetes-workloads--request-traffic-flow-diagram)
 2. [Prerequisites & Tooling Installation](#-prerequisites--tooling-installation)
 3. [Repository Structure](#-repository-structure)
 4. [Step-by-Step Deployment Guide](#-step-by-step-deployment-guide)
@@ -24,6 +27,14 @@ An enterprise-grade, end-to-end deployment guide for a **Three-Tier Web Applicat
 ---
 
 ## 🏗️ Architecture Overview
+
+The system architecture is structured into two decoupled, enterprise-grade layers:
+1. **Infrastructure as Code (Terraform)**: Provisions the foundational AWS networking, KMS security, IAM roles, ECR registries, and the managed EKS cluster across multiple Availability Zones.
+2. **Container Workload Orchestration (Kubernetes)**: Runs the three-tier application, automated routing, data persistence, and security controls inside the EKS cluster.
+
+---
+
+### High-Level End-to-End System Architecture
 
 ```text
                                   🌐 INTERNET (Users / QA Testers)
@@ -72,6 +83,167 @@ An enterprise-grade, end-to-end deployment guide for a **Three-Tier Web Applicat
                               │                     └────────────┘  │
                               └─────────────────────────────────────┘
 ```
+
+---
+
+### 1. Terraform & AWS Cloud Infrastructure Diagram
+
+The following diagram illustrates every AWS cloud resource provisioned by Terraform in [`terra-config/`](file:///c:/Users/deepa/Downloads/3-tier-app-Deployment/terra-config/):
+
+```mermaid
+flowchart TD
+    subgraph S3State["Terraform Remote State Backend"]
+        S3["Amazon S3: jeeban-terra-state-bucket\n(Versioning + AES256 Encryption)"]
+        TF["Terraform Engine\n(terra-config/)"]
+        TF -.->|"Stores tfstate"| S3
+    end
+
+    subgraph AWS_VPC["Dedicated Multi-AZ VPC (10.0.0.0/16)"]
+        IGW["Internet Gateway\n(aws_internet_gateway.igw)"]
+
+        subgraph PublicSubnets["Public Subnets (Multi-AZ)"]
+            Pub1["Public Subnet us-east-1a\n(10.0.1.0/24)"]
+            Pub2["Public Subnet us-east-1b\n(10.0.2.0/24)"]
+            NAT["AWS NAT Gateway + EIP\n(Outbound Internet Access)"]
+            NLB["AWS Network Load Balancer\n(Internet-Facing Entrypoint)"]
+        end
+
+        subgraph PrivateSubnets["Private Subnets (Multi-AZ - No Public IPs)"]
+            Priv1["Private Subnet us-east-1a\n(10.0.11.0/24)"]
+            Priv2["Private Subnet us-east-1b\n(10.0.12.0/24)"]
+
+            subgraph NodeGroup["EKS Managed Node Group (Three-tier-cloud-node-group)"]
+                EC2_1["Worker Node 1\n(t3.medium / AL2023_x86_64_STANDARD)"]
+                EC2_2["Worker Node 2\n(t3.medium / AL2023_x86_64_STANDARD)"]
+                LT["Launch Template\n(IMDSv2 Enforced / Encrypted Root Disk)"]
+            end
+        end
+    end
+
+    subgraph EKS_Cluster["EKS Control Plane (Three-tier-cloud - v1.31)"]
+        APIServer["Kubernetes API Server\n(Private & Public Endpoint)"]
+        KMS["AWS KMS Customer Managed Key\n(Envelope Encryption for etcd)"]
+        CW["CloudWatch Log Group\n(/aws/eks/Three-tier-cloud/cluster)"]
+        OIDC["IAM OIDC Identity Provider\n(Enables IRSA for Pods)"]
+    end
+
+    subgraph AWSServices["Supporting AWS Services"]
+        ECR_Front["AWS Public ECR\n(three-tier-frontend)"]
+        ECR_Back["AWS Public ECR\n(three-tier-backend)"]
+        SM["AWS Secrets Manager\n(workshop/mongo-sec)"]
+        IRSA_Role["IAM Role: workshop-secrets-store-role\n(Bound to workshop-sa)"]
+    end
+
+    %% Connections
+    IGW --> PublicSubnets
+    NAT --> PrivateSubnets
+    KMS -.->|"Encrypts Secrets at rest"| APIServer
+    APIServer -->|"Audit, API, Controller Logs"| CW
+    OIDC -.->|"Federates"| IRSA_Role
+    IRSA_Role -.->|"Permits Read"| SM
+    NLB --> NodeGroup
+    ECR_Front -.->|"Pulls Images"| NodeGroup
+    ECR_Back -.->|"Pulls Images"| NodeGroup
+```
+
+#### Key Infrastructure Highlights:
+- **Zero Public IPs on Nodes**: All EC2 worker nodes and application containers run in private subnets across two Availability Zones (`us-east-1a` & `us-east-1b`).
+- **Secure Outbound Access**: Nodes access external APIs and image registries strictly via a managed NAT Gateway and Elastic IP.
+- **KMS Envelope Encryption**: All Kubernetes Secret objects are encrypted before being written to `etcd` using an AWS KMS Customer Managed Key.
+- **IMDSv2 Enforced**: Protects against SSRF vulnerabilities by requiring session tokens for EC2 instance metadata access.
+
+---
+
+### 2. Kubernetes Workloads & Request Traffic Flow Diagram
+
+The following diagram details all container workloads, internal services, storage, and zero-trust policies inside the **`workshop`** Kubernetes namespace:
+
+```mermaid
+flowchart TD
+    Client(["🌐 External Client / Browser"])
+
+    subgraph IngressNs["Ingress Layer (Namespace: ingress-nginx)"]
+        NLB["AWS Network Load Balancer (Port 80 / TCP)"]
+        NIC["NGINX Ingress Controller Pods\n(Reverse Proxy & Traffic Router)"]
+    end
+
+    subgraph WorkshopNs["Application Workloads (Namespace: workshop)"]
+        IngressResource["Ingress: three-tier-ingress\n(nginx.ingress.kubernetes.io)"]
+
+        subgraph FrontTier["Frontend Web Tier"]
+            F_Svc["frontend Service\n(ClusterIP: 3000)"]
+            F_Pods["frontend Pods (2 Replicas)\n(React SPA / Port 3000)"]
+            F_HPA["frontend-hpa\n(Autoscales 2-8 Replicas)"]
+            F_PDB["frontend-pdb\n(minAvailable: 1)"]
+        end
+
+        subgraph BackTier["Backend API Tier"]
+            B_Svc["backend Service\n(ClusterIP: 8080)"]
+            B_Pods["backend Pods (2 Replicas)\n(Node.js Express / Port 8080)"]
+            B_HPA["backend-hpa\n(Autoscales 2-10 Replicas)"]
+            B_PDB["backend-pdb\n(minAvailable: 1)"]
+        end
+
+        subgraph DBTier["Database Stateful Tier"]
+            M_Svc["mongodb-svc\n(ClusterIP: 27017)"]
+            M_Headless["mongodb-headless\n(DNS: mongodb-0.mongodb-headless)"]
+            M_Pod["mongodb StatefulSet (mongodb-0)\n(Port 27017 / non-root: 999)"]
+            M_PDB["mongodb-pdb\n(maxUnavailable: 0)"]
+        end
+
+        subgraph SecurityStorage["Security, Configuration & Storage"]
+            SC["StorageClass: ebs-gp3-sc\n(WaitForFirstConsumer)"]
+            PVC["PVC: mongo-data-mongodb-0\n(10Gi gp3 Volume Claim)"]
+            PV["AWS EBS PersistentVolume\n(KMS Encrypted gp3)"]
+            
+            SA["ServiceAccount: workshop-sa\n(Annotated with IRSA IAM Role)"]
+            SPC["SecretProviderClass: aws-secrets-provider\n(Secrets Store CSI Driver)"]
+            K8sSec["Kubernetes Secret: mongo-sec\n(Synced DB Credentials)"]
+            NetPol["Zero-Trust NetworkPolicies\n(Default Deny + Explicit Ingress Whitelisting)"]
+        end
+    end
+
+    %% External Request Ingress
+    Client -->|"HTTP Request: /"| NLB
+    Client -->|"HTTP Request: /api/tasks"| NLB
+    NLB --> NIC
+    NIC --> IngressResource
+
+    %% Ingress to Services
+    IngressResource -->|"Path: / (Root)"| F_Svc
+    IngressResource -->|"Path: /api & /ok"| B_Svc
+
+    %% Service to Pods
+    F_Svc --> F_Pods
+    B_Svc --> B_Pods
+
+    %% Backend to Database
+    B_Pods -->|"TCP: 27017 / Authenticated"| M_Svc
+    M_Svc --> M_Pod
+    M_Headless -.->|"Stable Pod Identity"| M_Pod
+
+    %% Storage Binding
+    M_Pod --> PVC
+    PVC --> SC
+    SC --> PV
+
+    %% Secrets Injection
+    SA -.-> SPC
+    SPC -.->|"Fetches from AWS Secrets Manager"| K8sSec
+    K8sSec -.->|"Injects MONGO_INITDB_ROOT_*"| M_Pod
+    K8sSec -.->|"Injects MONGO_ROOT_*"| B_Pods
+
+    %% Governance & Policies
+    NetPol -.->|"Blocks direct ingress to DB"| DBTier
+    F_HPA -.-> F_Pods
+    B_HPA -.-> B_Pods
+```
+
+#### Key Kubernetes Flow Highlights:
+1. **Edge Routing**: All incoming HTTP traffic hits the AWS NLB, which delegates to the NGINX Ingress Controller. The Ingress forwards requests to `/` to the React frontend and `/api` or `/ok` to the Node.js backend API.
+2. **Dynamic Stateful Storage**: MongoDB runs as a `StatefulSet` with an automated PersistentVolumeClaim (`mongo-data-mongodb-0`). The AWS EBS CSI driver dynamically provisions a 10Gi encrypted EBS `gp3` disk upon scheduling (`WaitForFirstConsumer`).
+3. **Automated Secret Syncing**: The Secrets Store CSI Driver connects the Kubernetes `ServiceAccount` to AWS Secrets Manager using IAM Roles for Service Accounts (IRSA). Credentials are automatically synchronized to the Kubernetes Secret `mongo-sec` and injected as environment variables.
+4. **Zero-Trust Network Security**: A default-deny network policy ensures that external clients cannot connect directly to MongoDB, and only backend pods are authorized to communicate with MongoDB over port 27017.
 
 ---
 
